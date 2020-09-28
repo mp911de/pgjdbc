@@ -12,6 +12,7 @@ import java.sql.SQLException;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Caches values in simple least-recently-accessed order.
@@ -36,6 +37,7 @@ public class LruCache<Key extends @NonNull Object, Value extends @NonNull CanEst
     Value create(Key key) throws SQLException;
   }
 
+  private final ReentrantLock lock = new ReentrantLock();
   private final @Nullable EvictAction<Value> onEvict;
   private final @Nullable CreateAction<Key, Value> createAction;
   private final int maxSizeEntries;
@@ -104,8 +106,14 @@ public class LruCache<Key extends @NonNull Object, Value extends @NonNull CanEst
    * @param key cache key
    * @return entry from cache or null if cache does not contain given key.
    */
-  public synchronized @Nullable Value get(Key key) {
-    return cache.get(key);
+  public Value get(Key key) {
+    lock.lock();
+    try {
+      return cache.get(key);
+    }
+    finally {
+      lock.unlock();
+    }
   }
 
   /**
@@ -115,16 +123,22 @@ public class LruCache<Key extends @NonNull Object, Value extends @NonNull CanEst
    * @return entry from cache or newly created entry if cache does not contain given key.
    * @throws SQLException if entry creation fails
    */
-  public synchronized Value borrow(Key key) throws SQLException {
-    Value value = cache.remove(key);
-    if (value == null) {
-      if (createAction == null) {
-        throw new UnsupportedOperationException("createAction == null, so can't create object");
+  public Value borrow(Key key) throws SQLException {
+    lock.lock();
+    try {
+      Value value = cache.remove(key);
+      if (value == null) {
+        if (createAction == null) {
+          throw new UnsupportedOperationException("createAction == null, so can't create object");
+        }
+        return createAction.create(key);
       }
-      return createAction.create(key);
+      currentSize -= value.getSize();
+      return value;
     }
-    currentSize -= value.getSize();
-    return value;
+    finally {
+      lock.unlock();
+    }
   }
 
   /**
@@ -133,23 +147,29 @@ public class LruCache<Key extends @NonNull Object, Value extends @NonNull CanEst
    * @param key key
    * @param value value
    */
-  public synchronized void put(Key key, Value value) {
-    long valueSize = value.getSize();
-    if (maxSizeBytes == 0 || maxSizeEntries == 0 || valueSize * 2 > maxSizeBytes) {
-      // Just destroy the value if cache is disabled or if entry would consume more than a half of
-      // the cache
-      evictValue(value);
-      return;
+  public void put(Key key, Value value) {
+    lock.lock();
+    try {
+      long valueSize = value.getSize();
+      if (maxSizeBytes == 0 || maxSizeEntries == 0 || valueSize * 2 > maxSizeBytes) {
+        // Just destroy the value if cache is disabled or if entry would consume more than a half of
+        // the cache
+        evictValue(value);
+        return;
+      }
+      currentSize += valueSize;
+       Value prev = cache.put(key, value);
+      if (prev == null) {
+        return;
+      }
+      // This should be a rare case
+      currentSize -= prev.getSize();
+      if (prev != value) {
+        evictValue(prev);
+      }
     }
-    currentSize += valueSize;
-    @Nullable Value prev = cache.put(key, value);
-    if (prev == null) {
-      return;
-    }
-    // This should be a rare case
-    currentSize -= prev.getSize();
-    if (prev != value) {
-      evictValue(prev);
+    finally {
+      lock.unlock();
     }
   }
 
@@ -158,9 +178,15 @@ public class LruCache<Key extends @NonNull Object, Value extends @NonNull CanEst
    *
    * @param m The map containing entries to put into the cache
    */
-  public synchronized void putAll(Map<Key, Value> m) {
-    for (Map.Entry<Key, Value> entry : m.entrySet()) {
-      this.put(entry.getKey(), entry.getValue());
+  public void putAll(Map<Key, Value> m) {
+    lock.lock();
+    try {
+      for (Map.Entry<Key, Value> entry : m.entrySet()) {
+        this.put(entry.getKey(), entry.getValue());
+      }
+    }
+    finally {
+      lock.unlock();
     }
   }
 }

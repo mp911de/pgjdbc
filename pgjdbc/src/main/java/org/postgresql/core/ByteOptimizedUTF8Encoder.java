@@ -7,6 +7,7 @@ package org.postgresql.core;
 
 import java.io.IOException;
 import java.nio.charset.Charset;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * UTF-8 encoder which validates input and is optimized for jdk 9+ where {@code String} objects are backed by
@@ -16,6 +17,7 @@ import java.nio.charset.Charset;
 final class ByteOptimizedUTF8Encoder extends OptimizedUTF8Encoder {
 
   private static final Charset ASCII_CHARSET = Charset.forName("ascii");
+  private final ReentrantLock lock = new ReentrantLock();
 
   /**
    * {@inheritDoc}
@@ -40,12 +42,18 @@ final class ByteOptimizedUTF8Encoder extends OptimizedUTF8Encoder {
    * Decodes to {@code char[]} in presence of non-ascii values after first copying all known ascii chars directly
    * from {@code byte[]} to {@code char[]}.
    */
-  private synchronized String slowDecode(byte[] encodedString, int offset, int length, int curIdx) throws IOException {
-    final char[] chars = getCharArray(length);
-    int out = 0;
-    for (int i = offset; i < curIdx; ++i) {
-      chars[out++] = (char) encodedString[i];
+  private String slowDecode(byte[] encodedString, int offset, int length, int curIdx) throws IOException {
+    lock.lock();
+    try {
+      final char[] chars = getCharArray(length);
+      int out = 0;
+      for (int i = offset; i < curIdx; ++i) {
+        chars[out++] = (char) encodedString[i];
+      }
+      return decodeToChars(encodedString, curIdx, length - (curIdx - offset), chars, out);
+    } finally {
+      lock.unlock();
     }
-    return decodeToChars(encodedString, curIdx, length - (curIdx - offset), chars, out);
+
   }
 }

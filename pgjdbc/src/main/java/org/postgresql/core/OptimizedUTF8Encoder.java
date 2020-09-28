@@ -10,6 +10,7 @@ import org.postgresql.util.GT;
 import java.io.IOException;
 import java.nio.charset.Charset;
 import java.nio.charset.CharsetDecoder;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * UTF-8 encoder implementation which validates values during decoding which is
@@ -18,6 +19,7 @@ import java.nio.charset.CharsetDecoder;
 abstract class OptimizedUTF8Encoder extends Encoding {
 
   static final Charset UTF_8_CHARSET = Charset.forName("UTF-8");
+  private final ReentrantLock lock = new ReentrantLock();
 
   private static final int MIN_2_BYTES = 0x80;
   private static final int MIN_3_BYTES = 0x800;
@@ -57,18 +59,24 @@ abstract class OptimizedUTF8Encoder extends Encoding {
   /**
    * Decodes binary content to {@code String} by first converting to {@code char[]}.
    */
-  synchronized String charDecode(byte[] encodedString, int offset, int length) throws IOException {
-    final char[] chars = getCharArray(length);
-    int out = 0;
-    for (int i = offset, j = offset + length; i < j; ++i) {
-      // bytes are signed values. all ascii values are positive
-      if (encodedString[i] >= 0) {
-        chars[out++] = (char) encodedString[i];
-      } else {
-        return decodeToChars(encodedString, i, j - i, chars, out);
+  String charDecode(byte[] encodedString, int offset, int length) throws IOException {
+    lock.lock();
+    try {
+      final char[] chars = getCharArray(length);
+      int out = 0;
+      for (int i = offset, j = offset + length; i < j; ++i) {
+        // bytes are signed values. all ascii values are positive
+        if (encodedString[i] >= 0) {
+          chars[out++] = (char) encodedString[i];
+        } else {
+          return decodeToChars(encodedString, i, j - i, chars, out);
+        }
       }
+      return new String(chars, 0, out);
+    } finally {
+     lock.unlock();
     }
-    return new String(chars, 0, out);
+
   }
 
   /**
